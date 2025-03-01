@@ -1,0 +1,324 @@
+#include <iostream>
+#include <cmath>
+#include <ctime>
+#include <cstdlib>
+#include <iomanip>
+#include <fstream>
+using namespace std;
+
+void assignBoundaryConditions(double **M, double x[], double y[], const int& nx, const int& ny);
+double boundaryCondition(const double& x, const double& y);
+double SFunc(const double& x, const double& y);
+void solveJacobi(const int& nPoints, const double& xL, const double& xR, const double& yL, const double& yR, const double& tol, const double& h);
+void solveGaussSeidel(const int& nPoints, const double& xL, const double& xR, const double& yL, const double& yR, const double& tol, const double& h);
+void solveSOR(const int& nPoints, const double& xL, const double& xR, const double& yL, const double& yR, const double& tol, const double& h, const double& omega);
+
+int main() {
+	const double xL = 0.0;
+	const double xR = 1.0;
+	const double yL = 0.0;
+	const double yR = 1.0;
+
+	const int nPoints = 32;
+	const double tol = 1.0e-7;
+
+	const double omega = 2.0 / (1.0 + M_PI / nPoints);
+
+	const double h = (xR - xL) / (nPoints - 1);
+
+	solveJacobi(nPoints, xL, xR, yL, yR, tol, h);
+	solveGaussSeidel(nPoints, xL, xR, yL, yR, tol, h);
+	solveSOR(nPoints, xL, xR, yL, yR, tol, h, omega);
+
+	return 0;
+}
+
+void solveJacobi(const int& nPoints, const double& xL, const double& xR, const double& yL, const double& yR, const double& tol, const double& h) {
+	const int iStart = 1, iEnd = nPoints - 1;
+	const int jStart = 1, jEnd = nPoints - 1;
+
+	// Define matrices to store solution value at current and next iteration and source matrix
+	double **mOld;
+	double **mNew;
+	double **S;
+	mOld = new double*[nPoints];
+	mNew = new double*[nPoints];
+	S = new double*[nPoints];
+	mOld[0] = new double[nPoints * nPoints];
+	mNew[0] = new double[nPoints * nPoints];
+	S[0] = new double[nPoints * nPoints];
+	for (int j = 1; j < nPoints; j++) {
+		mOld[j] = mOld[j - 1] + nPoints;
+		mNew[j] = mNew[j - 1] + nPoints;
+		S[j] = S[j - 1] + nPoints;
+	}
+
+	// Define grid points
+	double x[nPoints], y[nPoints];
+	for (int i = 0; i < nPoints; i++)  x[i] = xL + i * h;
+	for (int j = 0; j < nPoints; j++)  y[j] = yL + j * h;
+
+	// Assign source value on the grid
+	for (int i = 0; i < nPoints; i++) {
+		for (int j = 0; j < nPoints; j++) {
+			S[i][j] = SFunc(x[i], y[j]);
+		}
+	}
+
+	// Initialize solution (initial guess)
+	for (int i = iStart; i < iEnd; i++) {
+		for (int j = jStart; j < jEnd; j++) {
+			mOld[i][j] = 0.0;
+		}
+	}
+
+	// Solve the equation
+	double err = std::numeric_limits<double>::max();
+	int numIter = 0;
+	while (err > tol) {
+		// Assign boundary condition on mOld
+		assignBoundaryConditions(mOld, x, y, nPoints, nPoints);
+
+		// Compute new value
+		for (int i = iStart; i < iEnd; i++) {
+			for (int j = jStart; j < jEnd; j++) {
+				mNew[i][j] = 0.25 * (mOld[i + 1][j] + mOld[i - 1][j] + mOld[i][j + 1] + mOld[i][j - 1] - h*h * S[i][j]);
+			}
+		}
+
+		// Assign boundary condition on mNew. Necessary for Laplacian error.
+		assignBoundaryConditions(mNew, x, y, nPoints, nPoints);
+
+		// Compute error
+		err = 0.0;
+		for (int i = iStart; i < iEnd; i++) {
+			for (int j = jStart; j < jEnd; j++) {
+				// Laplacian error. Fine for Dirichlet conditions.
+				double d2Mdx2 = mNew[i + 1][j] - 2.0 * mNew[i][j] + mNew[i - 1][j];
+				double d2Mdy2 = mNew[i][j + 1] - 2.0 * mNew[i][j] + mNew[i][j - 1];
+				err += fabs(d2Mdx2 + d2Mdy2 - h*h * S[i][j]);
+			}
+		}
+
+		// Assign new to old
+		for (int i = iStart; i < iEnd; i++) {
+			for (int j = jStart; j < jEnd; j++) {
+				mOld[i][j] = mNew[i][j];
+			}
+		}
+
+		// Increment iteration counter
+		numIter++;
+	}
+
+	cout << "Number of iterations (Jacobi): " << numIter - 1 << endl;
+
+	std::ofstream out;
+	out.open("data_jacobi.dat");
+	if (!out) exit(5);
+
+	for (int i = 0; i < nPoints; i++) {
+		for (int j = 0; j < nPoints; j++) {
+			out << x[i] << " " << y[j] << " " << mOld[i][j] << " " << S[i][j] << endl;
+		}
+	}
+
+	out.close();
+
+	delete[] mOld[0];
+	delete[] mOld;
+	delete[] mNew[0];
+	delete[] mNew;
+	delete[] S[0];
+	delete[] S;
+}
+
+void solveGaussSeidel(const int& nPoints, const double& xL, const double& xR, const double& yL, const double& yR, const double& tol, const double& h) {
+	const int iStart = 1, iEnd = nPoints - 1;
+	const int jStart = 1, jEnd = nPoints - 1;
+
+	// Define matrix to store solution values and source matrix
+	double **M;
+	double **S;
+	M = new double*[nPoints];
+	S = new double*[nPoints];
+	M[0] = new double[nPoints * nPoints];
+	S[0] = new double[nPoints * nPoints];
+	for (int j = 1; j < nPoints; j++) {
+		M[j] = M[j - 1] + nPoints;
+		S[j] = S[j - 1] + nPoints;
+	}
+
+	// Define grid points
+	double x[nPoints], y[nPoints];
+	for (int i = 0; i < nPoints; i++)  x[i] = xL + i * h;
+	for (int j = 0; j < nPoints; j++)  y[j] = yL + j * h;
+
+	// Assign source value on the grid
+	for (int i = 0; i < nPoints; i++) {
+		for (int j = 0; j < nPoints; j++) {
+			S[i][j] = SFunc(x[i], y[j]);
+		}
+	}
+
+	// Initialize solution (initial guess)
+	for (int i = iStart; i < iEnd; i++) {
+		for (int j = jStart; j < jEnd; j++) {
+			M[i][j] = 0.0;
+		}
+	}
+
+	// Solve the equation
+	double err = std::numeric_limits<double>::max();
+	int numIter = 0;
+	while (err > tol) {
+		// Assign boundary condition on M
+		assignBoundaryConditions(M, x, y, nPoints, nPoints);
+
+		// Compute new value
+		for (int i = iStart; i < iEnd; i++) {
+			for (int j = jStart; j < jEnd; j++) {
+				M[i][j] = 0.25 * (M[i + 1][j] + M[i - 1][j] + M[i][j + 1] + M[i][j - 1] - h*h * S[i][j]);
+			}
+		}
+
+		// Assign boundary condition on M. Necessary for Laplacian error.
+		assignBoundaryConditions(M, x, y, nPoints, nPoints);
+
+		// Compute error
+		err = 0.0;
+		for (int i = iStart; i < iEnd; i++) {
+			for (int j = jStart; j < jEnd; j++) {
+				// Laplacian error. Fine for Dirichlet conditions.
+				double d2Mdx2 = M[i + 1][j] - 2.0 * M[i][j] + M[i - 1][j];
+				double d2Mdy2 = M[i][j + 1] - 2.0 * M[i][j] + M[i][j - 1];
+				err += fabs(d2Mdx2 + d2Mdy2 - h*h * S[i][j]);
+			}
+		}
+
+		// Increment iteration counter
+		numIter++;
+	}
+
+	cout << "Number of iterations (Gauss - Seidel): " << numIter - 1 << endl;
+
+	std::ofstream out;
+	out.open("data_gauss.dat");
+	if (!out) exit(5);
+
+	for (int i = 0; i < nPoints; i++) {
+		for (int j = 0; j < nPoints; j++) {
+			out << x[i] << " " << y[j] << " " << M[i][j] << " " << S[i][j] << endl;
+		}
+	}
+
+	out.close();
+
+	delete[] M[0];
+	delete[] M;
+	delete[] S[0];
+	delete[] S;
+}
+
+void solveSOR(const int& nPoints, const double& xL, const double& xR, const double& yL, const double& yR, const double& tol, const double& h, const double& omega) {
+	const int iStart = 1, iEnd = nPoints - 1;
+	const int jStart = 1, jEnd = nPoints - 1;
+
+	// Define matrix to store solution values and source matrix
+	double **M;
+	double **S;
+	M = new double*[nPoints];
+	S = new double*[nPoints];
+	M[0] = new double[nPoints * nPoints];
+	S[0] = new double[nPoints * nPoints];
+	for (int j = 1; j < nPoints; j++) {
+		M[j] = M[j - 1] + nPoints;
+		S[j] = S[j - 1] + nPoints;
+	}
+
+	// Define grid points
+	double x[nPoints], y[nPoints];
+	for (int i = 0; i < nPoints; i++)  x[i] = xL + i * h;
+	for (int j = 0; j < nPoints; j++)  y[j] = yL + j * h;
+
+	// Assign source value on the grid
+	for (int i = 0; i < nPoints; i++) {
+		for (int j = 0; j < nPoints; j++) {
+			S[i][j] = SFunc(x[i], y[j]);
+		}
+	}
+
+	// Initialize solution (initial guess)
+	for (int i = iStart; i < iEnd; i++) {
+		for (int j = jStart; j < jEnd; j++) {
+			M[i][j] = 0.0;
+		}
+	}
+
+	// Solve the equation
+	double err = std::numeric_limits<double>::max();
+	int numIter = 0;
+	while (err > tol) {
+		// Assign boundary condition on M
+		assignBoundaryConditions(M, x, y, nPoints, nPoints);
+
+		// Compute new value
+		for (int i = iStart; i < iEnd; i++) {
+			for (int j = jStart; j < jEnd; j++) {
+				M[i][j] = (1.0 - omega) * M[i][j] + 0.25 * omega * (M[i + 1][j] + M[i - 1][j] + M[i][j + 1] + M[i][j - 1] - h*h * S[i][j]);
+			}
+		}
+
+		// Assign boundary condition on M. Necessary for Laplacian error.
+		assignBoundaryConditions(M, x, y, nPoints, nPoints);
+
+		// Compute error
+		err = 0.0;
+		for (int i = iStart; i < iEnd; i++) {
+			for (int j = jStart; j < jEnd; j++) {
+				// Laplacian error. Fine for Dirichlet conditions.
+				double d2Mdx2 = M[i + 1][j] - 2.0 * M[i][j] + M[i - 1][j];
+				double d2Mdy2 = M[i][j + 1] - 2.0 * M[i][j] + M[i][j - 1];
+				err += fabs(d2Mdx2 + d2Mdy2 - h*h * S[i][j]);
+			}
+		}
+
+		// Increment iteration counter
+		numIter++;
+	}
+
+	cout << "Number of iterations (SOR): " << numIter - 1 << endl;
+
+	std::ofstream out;
+	out.open("data_sor.dat");
+	if (!out) exit(5);
+
+	for (int i = 0; i < nPoints; i++) {
+		for (int j = 0; j < nPoints; j++) {
+			out << x[i] << " " << y[j] << " " << M[i][j] << " " << S[i][j] << endl;
+		}
+	}
+
+	out.close();
+
+	delete[] M[0];
+	delete[] M;
+	delete[] S[0];
+	delete[] S;
+}
+
+double boundaryCondition(const double& x, const double& y) {
+	return exp(-M_PI * x) * sin(-M_PI * y) + 0.25 * SFunc(x, y) * (x*x + y*y);
+}
+
+double SFunc(const double& x, const double& y) {
+	return 0.0;
+	// return 2.0;
+}
+
+void assignBoundaryConditions(double **M, double x[], double y[], const int& nx, const int& ny) {
+	for (int i = 0,      j = 0;      j < ny; j++)  M[i][j] = boundaryCondition(x[i], y[j]);
+	for (int i = nx - 1, j = 0;      j < ny; j++)  M[i][j] = boundaryCondition(x[i], y[j]);
+	for (int i = 0,      j = 0;      i < nx; i++)  M[i][j] = boundaryCondition(x[i], y[j]);
+	for (int i = 0,      j = ny - 1; i < nx; i++)  M[i][j] = boundaryCondition(x[i], y[j]);
+}
